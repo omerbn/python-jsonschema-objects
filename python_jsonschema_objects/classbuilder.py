@@ -24,7 +24,7 @@ if sys.version_info > (3,):
 
 class UnresolvedProperty(
         collections.namedtuple('UnresolvedProperty',
-                               'uri, property_name, refuri')):
+                               'uri, property_name, refuri, is_array')):
     """ Represents the information needed to attach a property
     to a class.
 
@@ -46,8 +46,18 @@ class UnresolvedProperty(
         """
         assert util.safe_issubclass(klass, ProtocolBase)
 
+        if self.is_array:
+            typ = resolve_map[self.refuri]
+            propdata = {
+                'type': 'array',
+                'validator': python_jsonschema_objects.wrapper_types.ArrayWrapper.create(
+                    self.refuri,
+                    item_constraint=typ)}
+        else:
+            propdata = {'type': resolve_map[self.refuri]}
+
         resolved_property = make_property(self.property_name,
-                                          {'type': resolve_map[self.refuri]},
+                                          propdata,
                                           resolve_map[self.refuri].__doc__)
 
         setattr(klass, self.property_name, resolved_property)
@@ -619,15 +629,31 @@ class ClassBuilder(object):
             elif 'type' in detail and detail['type'] == 'array':
                 if 'items' in detail and isinstance(detail['items'], dict):
                     if '$ref' in detail['items']:
-                        uri = util.resolve_ref_uri(
-                            self.resolver.resolution_scope,
-                            detail['items']['$ref'])
-                        typ = self.construct(uri, detail['items'])
-                        propdata = {
-                            'type': 'array',
-                            'validator': python_jsonschema_objects.wrapper_types.ArrayWrapper.create(
-                                uri,
-                                item_constraint=typ)}
+                        ref = detail['items']['$ref']
+                        uri = util.resolve_ref_uri(self.resolver.resolution_scope, ref)
+
+                        if uri not in self.resolved and uri in self.under_construction:
+                            """
+                            if $ref is under construction, then we're staring at a
+                            circular reference.  We save the information required to
+                            construct the property for later.
+                            """
+                            self.pending.add(
+                                UnresolvedProperty(
+                                    uri=nm,
+                                    property_name=prop,
+                                    refuri=uri,
+                                    is_array=True
+                                )
+                            )
+                            continue
+                        else:
+                            typ = self.construct(uri, detail['items'])
+                            propdata = {
+                                'type': 'array',
+                                'validator': python_jsonschema_objects.wrapper_types.ArrayWrapper.create(
+                                    uri,
+                                    item_constraint=typ)}
                     else:
                         uri = "{0}/{1}_{2}".format(nm,
                                                    prop, "<anonymous_field>")
